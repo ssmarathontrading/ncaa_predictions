@@ -2,8 +2,9 @@ name: Update NCAA Predictions CSV
 
 on:
   schedule:
-    - cron: '0 10,17 * * *' # Runs at 10 AM and 5 PM Eastern Time daily
-  workflow_dispatch: # Allows manual triggering for testing
+    - cron: '0 14 * * *' # Runs at 10:00 AM Eastern (14:00 UTC)
+    - cron: '0 21 * * *' # Runs at  5:00 PM Eastern (21:00 UTC)
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -26,19 +27,38 @@ jobs:
         run: |
           curl -fSL -o ncaapredictions.csv https://www.thepredictiontracker.com/ncaapredictions.csv
 
-      - name: Add Timestamp and Move CSV
+      - name: Add slot-based filename and move CSV
+        id: move
         run: |
-          timestamp=$(date +'%Y%m%d_%H%M%S')
+          # Use UTC date for a uniform YYYYMMDD portion
+          date_utc=$(date -u +'%Y%m%d')
+          hour_utc=$(date -u +'%H')
+
+          # Map scheduled UTC hours to human-friendly slots
+          # Schedule: 14:00 UTC == 10am ET, 21:00 UTC == 5pm ET
+          if [ "$hour_utc" = "14" ]; then
+            slot="10am"
+          elif [ "$hour_utc" = "21" ]; then
+            slot="5pm"
+          else
+            # For manual dispatches or runs outside the scheduled times, mark as manual with time for uniqueness
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+              slot="manual-$(date -u +'%H%M%S')"
+            else
+              slot="run-$(date -u +'%H%M%S')"
+            fi
+          fi
+
           mkdir -p data
-          newfile="data/ncaapredictions_${timestamp}.csv"
+          newfile="data/ncaapredictions_${date_utc}_${slot}.csv"
           mv ncaapredictions.csv "$newfile"
           echo "NEWFILE=$newfile" >> $GITHUB_ENV
+          echo "SLOT=$slot" >> $GITHUB_ENV
 
-      - name: Check CSV Changes (detect untracked/new or changed files)
+      - name: Check CSV Changes (detect new or changed files)
         id: check-csv
         run: |
-          # stage the new file(s) and see if there are staged changes
-          git add $NEWFILE
+          git add "$NEWFILE"
           if git diff --cached --exit-code --quiet; then
             echo "NO_CHANGES=true" >> $GITHUB_ENV
             echo "No staged changes to commit"
@@ -52,20 +72,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          timestamp=$(date +'%Y%m%d_%H%M%S')
           # ensure we are on the main branch and up-to-date
           git fetch origin main
           git checkout main
           git reset --hard origin/main
-          branch_name="update-csv-$timestamp"
+          timestamp=$(date -u +'%Y%m%d%H%M%S')
+          branch_name="update-csv-${SLOT}-${timestamp}"
           git checkout -b "$branch_name"
-          # commit staged files
-          git commit -m "chore: Update NCAA predictions CSV with timestamp $timestamp" || echo "No commit made"
-          # push branch, merge back into main, and push main
+          git commit -m "chore: Update NCAA predictions CSV (${SLOT})" || echo "No commit made"
           git push origin "$branch_name"
           git checkout main
           git pull origin main
           git merge --no-ff "$branch_name" -m "Merge $branch_name"
           git push origin main
-          # cleanup remote branch
           git push origin --delete "$branch_name" || true
+
+      - name: No changes detected
+        if: env.NO_CHANGES == 'true'
+        run: echo "No CSV changes detected; nothing to commit."
