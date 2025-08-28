@@ -1,0 +1,41 @@
+# NCAA Predictions Data Collection Configuration
+
+# Scheduling Configuration
+# The workflow is currently set to run twice daily at:
+schedule:
+  morning_time: "14:00"  # UTC time (10:00 AM Eastern)
+  evening_time: "21:00"  # UTC time (5:00 PM Eastern)
+  timezone: "UTC"
+  frequency: "twice_daily"
+
+# Data Source Configuration
+data_source:
+  url: "https://www.thepredictiontracker.com/ncaapredictions.csv"
+  timeout: 120  # seconds
+  retry_attempts: 3
+  retry_delay: 10  # seconds
+
+# File Configuration
+files:
+  data_directory: "data"
+  filename_pattern: "ncaapredictions_{date}_{slot}.csv"
+  retention_days: 30
+
+# Validation Configuration
+validation:
+  check_file_exists: true
+  check_file_not_empty: true
+  check_csv_format: true
+  min_file_size: 100  # bytes
+
+# Git Configuration
+git:
+  branch_prefix: "update-csv"
+  use_merge_strategy: true
+  commit_message_template: "chore: Update NCAA predictions CSV ({date}_{slot})"
+
+# Notes:
+# - To change the schedule, modify the cron expressions in .github/workflows/update_csv.yml
+# - Morning time (14:00 UTC) = 10:00 AM Eastern (9:00 AM Central, 7:00 AM Pacific)
+# - Evening time (21:00 UTC) = 5:00 PM Eastern (4:00 PM Central, 2:00 PM Pacific)
+# - The workflow accounts for both standard time and daylight saving time

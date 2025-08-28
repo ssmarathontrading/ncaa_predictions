@@ -4,7 +4,13 @@ on:
   schedule:
     - cron: '0 14 * * *' # Runs at 10:00 AM Eastern (14:00 UTC)
     - cron: '0 21 * * *' # Runs at  5:00 PM Eastern (21:00 UTC)
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Force update even if no changes detected'
+        required: false
+        default: 'false'
+        type: boolean
 
 permissions:
   contents: write
@@ -24,8 +30,48 @@ jobs:
           git config --global user.email "actions@github.com"
 
       - name: Download NCAA Predictions CSV
+        id: download
         run: |
-          curl -fSL -o ncaapredictions.csv https://www.thepredictiontracker.com/ncaapredictions.csv
+          echo "Starting download of NCAA predictions data..."
+          
+          # Try download with retries
+          for i in {1..3}; do
+            echo "Download attempt $i/3"
+            if curl -fSL --connect-timeout 30 --max-time 120 -o ncaapredictions.csv https://www.thepredictiontracker.com/ncaapredictions.csv; then
+              echo "Download successful on attempt $i"
+              break
+            else
+              echo "Download failed on attempt $i"
+              if [ $i -eq 3 ]; then
+                echo "All download attempts failed"
+                exit 1
+              fi
+              sleep 10
+            fi
+          done
+          
+          # Validate the downloaded file
+          if [ ! -f ncaapredictions.csv ]; then
+            echo "ERROR: Downloaded file does not exist"
+            exit 1
+          fi
+          
+          # Check if file is not empty
+          if [ ! -s ncaapredictions.csv ]; then
+            echo "ERROR: Downloaded file is empty"
+            exit 1
+          fi
+          
+          # Basic validation - check if it looks like a CSV
+          if ! head -1 ncaapredictions.csv | grep -q ","; then
+            echo "ERROR: Downloaded file does not appear to be a valid CSV"
+            exit 1
+          fi
+          
+          echo "File validation passed"
+          file_size=$(stat -c%s ncaapredictions.csv)
+          echo "Downloaded file size: $file_size bytes"
+          echo "FILE_SIZE=$file_size" >> $GITHUB_ENV
 
       - name: Compute target date/slot and move CSV
         id: move
@@ -70,13 +116,26 @@ jobs:
           if git diff --cached --exit-code --quiet; then
             echo "NO_STAGED_CHANGES=true" >> $GITHUB_ENV
             echo "No staged changes to commit"
+            
+            # Check if this is a forced update
+            if [ "${{ github.event.inputs.force_update }}" = "true" ]; then
+              echo "FORCE_UPDATE=true" >> $GITHUB_ENV
+              echo "Force update requested via manual dispatch"
+            fi
           else
             echo "STAGED_CHANGES=true" >> $GITHUB_ENV
             echo "Staged changes detected"
+            
+            # Get some stats about the changes
+            lines_added=$(git diff --cached --numstat | awk '{sum+=$1} END {print sum+0}')
+            lines_removed=$(git diff --cached --numstat | awk '{sum+=$2} END {print sum+0}')
+            echo "Lines added: $lines_added, Lines removed: $lines_removed"
+            echo "LINES_ADDED=$lines_added" >> $GITHUB_ENV
+            echo "LINES_REMOVED=$lines_removed" >> $GITHUB_ENV
           fi
 
       - name: Commit and Push Changes (allow manual test commits)
-        if: env.STAGED_CHANGES == 'true' || github.event_name == 'workflow_dispatch'
+        if: env.STAGED_CHANGES == 'true' || github.event_name == 'workflow_dispatch' || env.FORCE_UPDATE == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
@@ -91,14 +150,22 @@ jobs:
 
           # If there are staged changes, commit normally. If not and this is a manual run, create an allow-empty commit
           if git diff --cached --exit-code --quiet; then
-            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-              git commit --allow-empty -m "chore: Manual test commit for NCAA predictions CSV (${TARGET_DATE}_${SLOT})"
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ "$FORCE_UPDATE" = "true" ]; then
+              commit_msg="chore: Manual test commit for NCAA predictions CSV (${TARGET_DATE}_${SLOT})"
+              if [ "$FORCE_UPDATE" = "true" ]; then
+                commit_msg="chore: Forced update for NCAA predictions CSV (${TARGET_DATE}_${SLOT}) - File size: ${FILE_SIZE} bytes"
+              fi
+              git commit --allow-empty -m "$commit_msg"
             else
               echo "No changes to commit; exiting."
               exit 0
             fi
           else
-            git commit -m "chore: Update NCAA predictions CSV (${TARGET_DATE}_${SLOT})"
+            commit_msg="chore: Update NCAA predictions CSV (${TARGET_DATE}_${SLOT}) - File size: ${FILE_SIZE} bytes"
+            if [ -n "$LINES_ADDED" ] && [ -n "$LINES_REMOVED" ]; then
+              commit_msg="${commit_msg} (+${LINES_ADDED}/-${LINES_REMOVED} lines)"
+            fi
+            git commit -m "$commit_msg"
           fi
 
           # Push branch, merge it into main, and cleanup
@@ -110,5 +177,58 @@ jobs:
           git push origin --delete "$branch_name" || true
 
       - name: No changes detected
-        if: env.NO_STAGED_CHANGES == 'true' && github.event_name != 'workflow_dispatch'
+        if: env.NO_STAGED_CHANGES == 'true' && github.event_name != 'workflow_dispatch' && env.FORCE_UPDATE != 'true'
         run: echo "No CSV changes detected; nothing to commit."
+        
+      - name: Cleanup and Data Retention
+        if: always()
+        run: |
+          # Clean up temporary files
+          rm -f ncaapredictions.csv
+          
+          # Data retention: Keep only the last 30 days of data files
+          echo "Cleaning up old data files (keeping last 30 days)..."
+          find data/ -name "ncaapredictions_*.csv" -type f -mtime +30 -delete || true
+          
+          # Log current data directory status
+          echo "Current data directory contents:"
+          ls -la data/ || true
+          
+      - name: Job Summary
+        if: always()
+        run: |
+          echo "## NCAA Predictions Update Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Workflow**: ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Target Date/Slot**: ${TARGET_DATE}_${SLOT}" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -n "$FILE_SIZE" ]; then
+            echo "- **Downloaded File Size**: ${FILE_SIZE} bytes" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "$STAGED_CHANGES" = "true" ]; then
+            echo "- **Changes**: ✅ New data committed" >> $GITHUB_STEP_SUMMARY
+            if [ -n "$LINES_ADDED" ] && [ -n "$LINES_REMOVED" ]; then
+              echo "- **Change Stats**: +${LINES_ADDED}/-${LINES_REMOVED} lines" >> $GITHUB_STEP_SUMMARY
+            fi
+          elif [ "$NO_STAGED_CHANGES" = "true" ]; then
+            echo "- **Changes**: ⚠️ No changes detected in data" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "- **Status**: ✅ Workflow completed successfully" >> $GITHUB_STEP_SUMMARY
+          
+      - name: Failure Notification
+        if: failure()
+        run: |
+          echo "## ❌ NCAA Predictions Update Failed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Workflow**: ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ❌ Workflow failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please check the workflow logs for more details." >> $GITHUB_STEP_SUMMARY
+          
+          # Create an issue on failure (optional - can be enabled by adding GITHUB_TOKEN)
+          # This would require additional permissions and setup
+          echo "Workflow failed at $(date -u). Check logs for details."
