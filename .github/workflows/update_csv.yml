@@ -5,47 +5,67 @@ on:
     - cron: '0 10,17 * * *' # Runs at 10 AM and 5 PM Eastern Time daily
   workflow_dispatch: # Allows manual triggering for testing
 
+permissions:
+  contents: write
+
 jobs:
   update-csv:
     runs-on: ubuntu-latest
     steps:
-      # Checkout the repository
-      - name: Checkout Repository
+      - name: Checkout repository (full history)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Download the CSV file
+      - name: Set up git user
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
       - name: Download NCAA Predictions CSV
         run: |
-          curl -o ncaapredictions.csv https://www.thepredictiontracker.com/ncaapredictions.csv
+          curl -fSL -o ncaapredictions.csv https://www.thepredictiontracker.com/ncaapredictions.csv
 
-      # Add timestamp to filename and move to data folder
       - name: Add Timestamp and Move CSV
         run: |
           timestamp=$(date +'%Y%m%d_%H%M%S')
           mkdir -p data
-          mv ncaapredictions.csv "data/ncaapredictions_$timestamp.csv"
+          newfile="data/ncaapredictions_${timestamp}.csv"
+          mv ncaapredictions.csv "$newfile"
+          echo "NEWFILE=$newfile" >> $GITHUB_ENV
 
-      # Check if CSV content has changed (optional, to avoid unnecessary commits)
-      - name: Check CSV Changes
+      - name: Check CSV Changes (detect untracked/new or changed files)
         id: check-csv
         run: |
-          git diff --exit-code --quiet data/ncaapredictions_*.csv || echo "DIFFERENT_CSV=true" >> $GITHUB_ENV
+          # stage the new file(s) and see if there are staged changes
+          git add $NEWFILE
+          if git diff --cached --exit-code --quiet; then
+            echo "NO_CHANGES=true" >> $GITHUB_ENV
+            echo "No staged changes to commit"
+          else
+            echo "DIFFERENT_CSV=true" >> $GITHUB_ENV
+            echo "Staged changes detected"
+          fi
 
-      # Commit and push changes
       - name: Commit and Push Changes
         if: env.DIFFERENT_CSV == 'true' || github.event_name == 'workflow_dispatch'
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          timestamp=$(date +'%Y%m%d_%H%M%S')
-          branch_name="update-csv-$timestamp"
-          git checkout -b "$branch_name"
-          git add data/ncaapredictions_*.csv
-          git commit -m "Update NCAA predictions CSV with timestamp $timestamp"
-          git push origin "$branch_name"
-          git checkout main
-          git merge --no-ff "$branch_name"
-          git push origin main
-          git push origin --delete "$branch_name"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          timestamp=$(date +'%Y%m%d_%H%M%S')
+          # ensure we are on the main branch and up-to-date
+          git fetch origin main
+          git checkout main
+          git reset --hard origin/main
+          branch_name="update-csv-$timestamp"
+          git checkout -b "$branch_name"
+          # commit staged files
+          git commit -m "chore: Update NCAA predictions CSV with timestamp $timestamp" || echo "No commit made"
+          # push branch, merge back into main, and push main
+          git push origin "$branch_name"
+          git checkout main
+          git pull origin main
+          git merge --no-ff "$branch_name" -m "Merge $branch_name"
+          git push origin main
+          # cleanup remote branch
+          git push origin --delete "$branch_name" || true
