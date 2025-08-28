@@ -17,8 +17,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up git user
         run: |
@@ -32,11 +30,15 @@ jobs:
       - name: Compute target date/slot and move CSV
         id: move
         run: |
+          # Current UTC timestamps
           now_ts=$(date -u +%s)
           today=$(date -u +%Y-%m-%d)
+
+          # Scheduled slots (UTC)
           ts14=$(date -u -d "$today 14:00:00 UTC" +%s)
           ts21=$(date -u -d "$today 21:00:00 UTC" +%s)
 
+          # Determine the most recent scheduled slot that has already passed
           if [ "$now_ts" -ge "$ts21" ]; then
             slot="5pm"
             target_date=$(date -u +%Y%m%d)
@@ -44,22 +46,19 @@ jobs:
             slot="10am"
             target_date=$(date -u +%Y%m%d)
           else
+            # If it's before today's 14:00 UTC, the most recent scheduled run is yesterday at 21:00 UTC
             slot="5pm"
             target_date=$(date -u -d 'yesterday' +%Y%m%d)
           fi
 
+          # For actual scheduled runs that trigger exactly at 14:00 or 21:00 UTC this will match the slot/date above.
+          # For manual dispatches, this selects the most recent slot that has already passed (as requested).
           mkdir -p data
           newfile="data/ncaapredictions_${target_date}_${slot}.csv"
           mv ncaapredictions.csv "$newfile"
           echo "NEWFILE=$newfile" >> $GITHUB_ENV
           echo "SLOT=$slot" >> $GITHUB_ENV
           echo "TARGET_DATE=$target_date" >> $GITHUB_ENV
-
-      - name: Debug: show NEWFILE and data dir
-        run: |
-          echo "NEWFILE=$NEWFILE"
-          ls -la data || true
-          file "$NEWFILE" || true
 
       - name: Stage new file
         run: |
@@ -81,6 +80,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # ensure we are on the main branch and up-to-date
           git fetch origin main
           git checkout main
           git reset --hard origin/main
@@ -89,6 +89,7 @@ jobs:
           branch_name="update-csv-${TARGET_DATE}-${SLOT}-${timestamp}"
           git checkout -b "$branch_name"
 
+          # If there are staged changes, commit normally. If not and this is a manual run, create an allow-empty commit
           if git diff --cached --exit-code --quiet; then
             if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
               git commit --allow-empty -m "chore: Manual test commit for NCAA predictions CSV (${TARGET_DATE}_${SLOT})"
@@ -100,6 +101,7 @@ jobs:
             git commit -m "chore: Update NCAA predictions CSV (${TARGET_DATE}_${SLOT})"
           fi
 
+          # Push branch, merge it into main, and cleanup
           git push origin "$branch_name"
           git checkout main
           git pull origin main
