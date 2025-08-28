@@ -27,48 +27,56 @@ jobs:
         run: |
           curl -fSL -o ncaapredictions.csv https://www.thepredictiontracker.com/ncaapredictions.csv
 
-      - name: Add slot-based filename and move CSV
+      - name: Compute target date/slot and move CSV
         id: move
         run: |
-          # Use UTC date for a uniform YYYYMMDD portion
-          date_utc=$(date -u +'%Y%m%d')
-          hour_utc=$(date -u +'%H')
+          # Current UTC timestamps
+          now_ts=$(date -u +%s)
+          today=$(date -u +%Y-%m-%d)
 
-          # Map scheduled UTC hours to human-friendly slots
-          # Schedule: 14:00 UTC == 10am ET, 21:00 UTC == 5pm ET
-          if [ "$hour_utc" = "14" ]; then
-            slot="10am"
-          elif [ "$hour_utc" = "21" ]; then
+          # Scheduled slots (UTC)
+          ts14=$(date -u -d "$today 14:00:00 UTC" +%s)
+          ts21=$(date -u -d "$today 21:00:00 UTC" +%s)
+
+          # Determine the most recent scheduled slot that has already passed
+          if [ "$now_ts" -ge "$ts21" ]; then
             slot="5pm"
+            target_date=$(date -u +%Y%m%d)
+          elif [ "$now_ts" -ge "$ts14" ]; then
+            slot="10am"
+            target_date=$(date -u +%Y%m%d)
           else
-            # For manual dispatches or runs outside the scheduled times, mark as manual with time for uniqueness
-            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-              slot="manual-$(date -u +'%H%M%S')"
-            else
-              slot="run-$(date -u +'%H%M%S')"
-            fi
+            # If it's before today's 14:00 UTC, the most recent scheduled run is yesterday at 21:00 UTC
+            slot="5pm"
+            target_date=$(date -u -d 'yesterday' +%Y%m%d)
           fi
 
+          # For actual scheduled runs that trigger exactly at 14:00 or 21:00 UTC this will match the slot/date above.
+          # For manual dispatches, this selects the most recent slot that has already passed (as requested).
           mkdir -p data
-          newfile="data/ncaapredictions_${date_utc}_${slot}.csv"
+          newfile="data/ncaapredictions_${target_date}_${slot}.csv"
           mv ncaapredictions.csv "$newfile"
           echo "NEWFILE=$newfile" >> $GITHUB_ENV
           echo "SLOT=$slot" >> $GITHUB_ENV
+          echo "TARGET_DATE=$target_date" >> $GITHUB_ENV
 
-      - name: Check CSV Changes (detect new or changed files)
-        id: check-csv
+      - name: Stage new file
         run: |
           git add "$NEWFILE"
+
+      - name: Check CSV Changes (detect staged changes)
+        id: check-csv
+        run: |
           if git diff --cached --exit-code --quiet; then
-            echo "NO_CHANGES=true" >> $GITHUB_ENV
+            echo "NO_STAGED_CHANGES=true" >> $GITHUB_ENV
             echo "No staged changes to commit"
           else
-            echo "DIFFERENT_CSV=true" >> $GITHUB_ENV
+            echo "STAGED_CHANGES=true" >> $GITHUB_ENV
             echo "Staged changes detected"
           fi
 
-      - name: Commit and Push Changes
-        if: env.DIFFERENT_CSV == 'true' || github.event_name == 'workflow_dispatch'
+      - name: Commit and Push Changes (allow manual test commits)
+        if: env.STAGED_CHANGES == 'true' || github.event_name == 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -76,10 +84,24 @@ jobs:
           git fetch origin main
           git checkout main
           git reset --hard origin/main
+
           timestamp=$(date -u +'%Y%m%d%H%M%S')
-          branch_name="update-csv-${SLOT}-${timestamp}"
+          branch_name="update-csv-${TARGET_DATE}-${SLOT}-${timestamp}"
           git checkout -b "$branch_name"
-          git commit -m "chore: Update NCAA predictions CSV (${SLOT})" || echo "No commit made"
+
+          # If there are staged changes, commit normally. If not and this is a manual run, create an allow-empty commit
+          if git diff --cached --exit-code --quiet; then
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+              git commit --allow-empty -m "chore: Manual test commit for NCAA predictions CSV (${TARGET_DATE}_${SLOT})"
+            else
+              echo "No changes to commit; exiting."
+              exit 0
+            fi
+          else
+            git commit -m "chore: Update NCAA predictions CSV (${TARGET_DATE}_${SLOT})"
+          fi
+
+          # Push branch, merge it into main, and cleanup
           git push origin "$branch_name"
           git checkout main
           git pull origin main
@@ -88,5 +110,5 @@ jobs:
           git push origin --delete "$branch_name" || true
 
       - name: No changes detected
-        if: env.NO_CHANGES == 'true'
+        if: env.NO_STAGED_CHANGES == 'true' && github.event_name != 'workflow_dispatch'
         run: echo "No CSV changes detected; nothing to commit."
