@@ -168,11 +168,15 @@ jobs:
             git commit -m "$commit_msg"
           fi
 
-      - name: Set up rclone
+      - name: Install rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+      
+      - name: Set up rclone config
         run: |
           mkdir -p ~/.config/rclone
           echo "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
-
+      
       - name: Upload CSV to Google Drive (Personal)
         run: |
           rclone copy ${{ env.NEWFILE }} gdrive:1nFUtLKXikwync8raV3xIh7mTWmawl-Y4
