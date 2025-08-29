@@ -140,21 +140,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
-          # ensure we are on the main branch and up-to-date
           git fetch origin main
-          git checkout -B main origin/main
-
+            # stay on main OR create a branch - choose one strategy
           timestamp=$(date -u +'%Y%m%d%H%M%S')
           branch_name="update-csv-${TARGET_DATE}-${SLOT}-${timestamp}"
-          git checkout -b "$branch_name"
+          git checkout -B "$branch_name" origin/main
 
-          # If there are staged changes, commit normally. If not and this is a manual run, create an allow-empty commit
           if git diff --cached --exit-code --quiet; then
             if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ "$FORCE_UPDATE" = "true" ]; then
-              commit_msg="chore: Manual test commit for NCAA predictions CSV (${TARGET_DATE}_${SLOT})"
-              if [ "$FORCE_UPDATE" = "true" ]; then
-                commit_msg="chore: Forced update for NCAA predictions CSV (${TARGET_DATE}_${SLOT}) - File size: ${FILE_SIZE} bytes"
-              fi
+              commit_msg="chore: Forced/manual update for NCAA predictions CSV (${TARGET_DATE}_${SLOT}) - File size: ${FILE_SIZE} bytes"
               git commit --allow-empty -m "$commit_msg"
             else
               echo "No changes to commit; exiting."
@@ -168,22 +162,31 @@ jobs:
             git commit -m "$commit_msg"
           fi
 
+          git push --set-upstream origin "$branch_name"
+
       - name: Install rclone
         run: |
-          curl https://rclone.org/install.sh | sudo bash
-      
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+
+      # If using base64 secret:
+      # - name: Set up rclone config
+      #   run: |
+      #     mkdir -p ~/.config/rclone
+      #     echo "${{ secrets.RCLONE_CONF_B64 }}" | base64 -d > ~/.config/rclone/rclone.conf
+      # If using plain text:
       - name: Set up rclone config
         run: |
           mkdir -p ~/.config/rclone
-          printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
-      
-      - name: Debug rclone config
+          printf '%s\n' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+          chmod 600 ~/.config/rclone/rclone.conf
+
+      - name: Test rclone remote
         run: |
-          cat ~/.config/rclone/rclone.conf
-      
+          rclone about gdrive: || { echo "Remote test failed"; exit 1; }
+
       - name: Upload file to Google Drive
         run: |
-          rclone copy data/ncaapredictions_20250829_10am.csv gdrive:
+          rclone copy "$NEWFILE" gdrive: --progress
 
       - name: No changes detected
         if: env.NO_STAGED_CHANGES == 'true' && github.event_name != 'workflow_dispatch' && env.FORCE_UPDATE != 'true'
