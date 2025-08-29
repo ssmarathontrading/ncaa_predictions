@@ -168,13 +168,13 @@ jobs:
             git commit -m "$commit_msg"
           fi
 
-          # Push branch, merge it into main, and cleanup
-          git push origin "$branch_name"
-          git checkout main
-          git pull origin main
-          git merge --no-ff "$branch_name" -m "Merge $branch_name"
-          git push origin main
-          git push origin --delete "$branch_name" || true
+      - name: Upload CSV to Google Drive
+        if: env.STAGED_CHANGES == 'true' || github.event_name == 'workflow_dispatch' || env.FORCE_UPDATE == 'true'
+        uses: Jumbo810/Upload_Github_Artifacts_TO_GDrive@v2.3.1
+        with:
+          gdrive_token: ${{ secrets.GDRIVE }}
+          upload_path: ${{ env.NEWFILE }}
+          folder_id: 1nFUtLKXikwync8raV3xIh7mTWmawl-Y4
 
       - name: No changes detected
         if: env.NO_STAGED_CHANGES == 'true' && github.event_name != 'workflow_dispatch' && env.FORCE_UPDATE != 'true'
