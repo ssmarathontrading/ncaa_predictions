@@ -168,15 +168,14 @@ jobs:
             git commit -m "$commit_msg"
           fi
 
+      - name: Set up rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+
       - name: Upload CSV to Google Drive (Personal)
-        uses: marketplacer/gdrive-upload@v1.0.7
-        with:
-          filename: ${{ env.NEWFILE }}
-          folderId: 1nFUtLKXikwync8raV3xIh7mTWmawl-Y4
-        env:
-          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
-          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
-          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+        run: |
+          rclone copy ${{ env.NEWFILE }} gdrive:1nFUtLKXikwync8raV3xIh7mTWmawl-Y4
 
       - name: No changes detected
         if: env.NO_STAGED_CHANGES == 'true' && github.event_name != 'workflow_dispatch' && env.FORCE_UPDATE != 'true'
