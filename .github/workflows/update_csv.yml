@@ -168,13 +168,15 @@ jobs:
             git commit -m "$commit_msg"
           fi
 
-      - name: Upload CSV to Google Drive
-        if: env.STAGED_CHANGES == 'true' || github.event_name == 'workflow_dispatch' || env.FORCE_UPDATE == 'true'
-        uses: Jumbo810/Upload_Github_Artifacts_TO_GDrive@v2.3.1
+      - name: Upload CSV to Google Drive (Personal)
+        uses: adityak74/gdrive-upload@v1
         with:
-          credentials: ${{ secrets.GDRIVE }}
-          parent_folder_id: 1nFUtLKXikwync8raV3xIh7mTWmawl-Y4
-          target: ${{ env.NEWFILE }}
+          filename: ${{ env.NEWFILE }}
+          folderId: 1nFUtLKXikwync8raV3xIh7mTWmawl-Y4
+        env:
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
 
       - name: No changes detected
         if: env.NO_STAGED_CHANGES == 'true' && github.event_name != 'workflow_dispatch' && env.FORCE_UPDATE != 'true'
