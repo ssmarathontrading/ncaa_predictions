@@ -175,11 +175,15 @@ jobs:
       - name: Set up rclone config
         run: |
           mkdir -p ~/.config/rclone
-          echo "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+          printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
       
-      - name: Upload CSV to Google Drive (Personal)
+      - name: Debug rclone config
         run: |
-          rclone copy ${{ env.NEWFILE }} gdrive:1nFUtLKXikwync8raV3xIh7mTWmawl-Y4
+          cat ~/.config/rclone/rclone.conf
+      
+      - name: Upload file to Google Drive
+        run: |
+          rclone copy data/ncaapredictions_20250829_10am.csv gdrive:
 
       - name: No changes detected
         if: env.NO_STAGED_CHANGES == 'true' && github.event_name != 'workflow_dispatch' && env.FORCE_UPDATE != 'true'
