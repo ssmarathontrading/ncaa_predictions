@@ -169,7 +169,7 @@ jobs:
           fi
 
       - name: Upload CSV to Google Drive (Personal)
-        uses: adityak74/gdrive-upload@v1
+        uses: marketplacer/gdrive-upload@v1.0.7
         with:
           filename: ${{ env.NEWFILE }}
           folderId: 1nFUtLKXikwync8raV3xIh7mTWmawl-Y4
