@@ -172,9 +172,9 @@ jobs:
         if: env.STAGED_CHANGES == 'true' || github.event_name == 'workflow_dispatch' || env.FORCE_UPDATE == 'true'
         uses: Jumbo810/Upload_Github_Artifacts_TO_GDrive@v2.3.1
         with:
-          gdrive_token: ${{ secrets.GDRIVE }}
-          upload_path: ${{ env.NEWFILE }}
-          folder_id: 1nFUtLKXikwync8raV3xIh7mTWmawl-Y4
+          credentials: ${{ secrets.GDRIVE }}
+          parent_folder_id: 1nFUtLKXikwync8raV3xIh7mTWmawl-Y4
+          target: ${{ env.NEWFILE }}
 
       - name: No changes detected
         if: env.NO_STAGED_CHANGES == 'true' && github.event_name != 'workflow_dispatch' && env.FORCE_UPDATE != 'true'
