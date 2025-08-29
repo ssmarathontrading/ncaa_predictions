@@ -186,7 +186,7 @@ jobs:
       
       - name: Upload file to Google Drive
         run: |
-          rclone copy data/ncaapredictions_20250829_10am.csv gdrive:
+          rclone copy data/ncaapredictions_20250829_10am.csv gdrive:1nFUtLKXikwync8raV3xIh7mTWmawl-Y4
 
       - name: No changes detected
         if: env.NO_STAGED_CHANGES == 'true' && github.event_name != 'workflow_dispatch' && env.FORCE_UPDATE != 'true'
