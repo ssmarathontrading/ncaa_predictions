@@ -1,0 +1,217 @@
+name: Update NCAA Predictions CSV
+
+on:
+  schedule:
+    - cron: '0 14 * * *'   # 10:00 AM Eastern (14:00 UTC)
+    - cron: '0 21 * * *'   # 5:00 PM Eastern (21:00 UTC)
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Force update even if no changes detected'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  update-csv:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git user
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Download NCAA Predictions CSV
+        id: download
+        run: |
+          set -euo pipefail
+          echo "Starting download..."
+          for i in 1 2 3; do
+            echo "Attempt $i/3"
+            if curl -fSL --connect-timeout 30 --max-time 120 -o ncaapredictions.csv https://www.thepredictiontracker.com/ncaapredictions.csv; then
+              echo "Download succeeded."
+              break
+            fi
+            echo "Attempt $i failed."
+            if [ "$i" = "3" ]; then
+              echo "All attempts failed."
+              exit 1
+            fi
+            sleep 10
+          done
+          if [ ! -s ncaapredictions.csv ]; then
+            echo "ERROR: File missing or empty."
+            exit 1
+          fi
+          if ! head -1 ncaapredictions.csv | grep -q ','; then
+            echo "ERROR: First line does not look like CSV."
+            exit 1
+          fi
+          file_size=$(stat -c%s ncaapredictions.csv)
+          echo "FILE_SIZE=$file_size" >> "$GITHUB_ENV"
+          echo "Downloaded file size: $file_size"
+
+      - name: Compute target date/slot and move CSV
+        id: move
+        run: |
+            set -euo pipefail
+            now_ts=$(date -u +%s)
+            today=$(date -u +%Y-%m-%d)
+            ts14=$(date -u -d "$today 14:00:00 UTC" +%s)
+            ts21=$(date -u -d "$today 21:00:00 UTC" +%s)
+            if [ "$now_ts" -ge "$ts21" ]; then
+              slot="5pm"
+              target_date=$(date -u +%Y%m%d)
+            elif [ "$now_ts" -ge "$ts14" ]; then
+              slot="10am"
+              target_date=$(date -u +%Y%m%d)
+            else
+              slot="5pm"
+              target_date=$(date -u -d 'yesterday' +%Y%m%d)
+            fi
+            mkdir -p data
+            newfile="data/ncaapredictions_${target_date}_${slot}.csv"
+            mv ncaapredictions.csv "$newfile"
+            echo "NEWFILE=$newfile" >> "$GITHUB_ENV"
+            echo "SLOT=$slot" >> "$GITHUB_ENV"
+            echo "TARGET_DATE=$target_date" >> "$GITHUB_ENV"
+            ls -l "$newfile"
+
+      - name: Stage new file
+        run: |
+          set -euo pipefail
+          git add "$NEWFILE"
+
+      - name: Check CSV changes
+        id: check-csv
+        run: |
+          set -euo pipefail
+          if git diff --cached --exit-code --quiet; then
+            echo "NO_STAGED_CHANGES=true" >> "$GITHUB_ENV"
+            echo "No staged diff."
+            if [ "${{ github.event.inputs.force_update || 'false' }}" = "true" ]; then
+              echo "FORCE_UPDATE=true" >> "$GITHUB_ENV"
+              echo "Force update flagged."
+            fi
+          else
+            echo "STAGED_CHANGES=true" >> "$GITHUB_ENV"
+            lines_added=$(git diff --cached --numstat | awk '{a+=$1} END{print a+0}')
+            lines_removed=$(git diff --cached --numstat | awk '{r+=$2} END{print r+0}')
+            echo "LINES_ADDED=$lines_added" >> "$GITHUB_ENV"
+            echo "LINES_REMOVED=$lines_removed" >> "$GITHUB_ENV"
+            echo "Diff: +$lines_added / -$lines_removed"
+          fi
+
+      - name: Commit & push (direct to main)
+        if: env.STAGED_CHANGES == 'true' || github.event_name == 'workflow_dispatch' || env.FORCE_UPDATE == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout main
+          git pull --ff-only
+          if git diff --cached --exit-code --quiet; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${FORCE_UPDATE:-}" = "true" ]; then
+              msg="chore: Manual/forced NCAA predictions CSV (${TARGET_DATE}_${SLOT}) - File size: ${FILE_SIZE} bytes"
+              git commit --allow-empty -m "$msg"
+            else
+              echo "Nothing to commit."
+              exit 0
+            fi
+          else
+            msg="chore: Update NCAA predictions CSV (${TARGET_DATE}_${SLOT}) - File size: ${FILE_SIZE} bytes"
+            if [ -n "${LINES_ADDED:-}" ] && [ -n "${LINES_REMOVED:-}" ]; then
+              msg="$msg (+${LINES_ADDED}/-${LINES_REMOVED} lines)"
+            fi
+            git commit -m "$msg"
+          fi
+          git push origin main
+          echo "Committed & pushed:"
+          git log -1 --oneline
+
+      - name: Upload CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ncaapredictions-${{ env.TARGET_DATE }}-${{ env.SLOT }}
+          path: ${{ env.NEWFILE }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Install rclone
+        run: |
+          set -euo pipefail
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+
+      - name: Set up rclone config
+        run: |
+          set -euo pipefail
+          if [ -z "${{ secrets.RCLONE_CONF_B64 }}" ]; then
+            echo "RCLONE_CONF_B64 secret missing"; exit 1
+          fi
+          mkdir -p ~/.config/rclone
+            echo "${{ secrets.RCLONE_CONF_B64 }}" | base64 -d > ~/.config/rclone/rclone.conf
+          chmod 600 ~/.config/rclone/rclone.conf
+
+      - name: Verify rclone remote
+        run: |
+          set -euo pipefail
+          rclone about gdrive: || { echo "Remote verification failed"; exit 1; }
+
+      - name: Upload file to Google Drive
+        run: |
+          set -euo pipefail
+          echo "Uploading $NEWFILE"
+          rclone copy "$NEWFILE" "gdrive:1nFUtLKXikwync8raV3xIh7mTWmawl-Y4" -v
+          echo "Upload complete"
+
+      - name: No changes informational
+        if: env.NO_STAGED_CHANGES == 'true' && github.event_name != 'workflow_dispatch' && env.FORCE_UPDATE != 'true'
+        run: echo "No repo commit (content unchanged)."
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ncaapredictions.csv || true
+          echo "Data directory listing:"
+          ls -la data/ || true
+
+      - name: Job Summary
+        if: always()
+        run: |
+          {
+            echo "## NCAA Predictions Update Summary"
+            echo "- Trigger: ${{ github.event_name }}"
+            echo "- UTC Time: $(date -u)"
+            echo "- Target: ${TARGET_DATE}_${SLOT}"
+            [ -n "${FILE_SIZE:-}" ] && echo "- File Size: ${FILE_SIZE} bytes"
+            if [ "${STAGED_CHANGES:-}" = "true" ]; then
+              if [ -n "${LINES_ADDED:-}" ] && [ -n "${LINES_REMOVED:-}" ]; then
+                echo "- Diff: +${LINES_ADDED}/-${LINES_REMOVED} lines"
+              else
+                echo "- Diff: changes committed"
+              fi
+            elif [ "${NO_STAGED_CHANGES:-}" = "true" ]; then
+              echo "- Diff: no change (artifact still uploaded)"
+            fi
+            echo "- Drive Upload: attempted"
+            echo "- Status: SUCCESS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Failure Summary
+        if: failure()
+        run: |
+          {
+            echo "## ❌ NCAA Predictions Update Failed"
+            echo "- Trigger: ${{ github.event_name }}"
+            echo "- UTC Time: $(date -u)"
+            echo "- See logs for details."
+          } >> "$GITHUB_STEP_SUMMARY"
